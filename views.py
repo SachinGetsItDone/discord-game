@@ -1,16 +1,15 @@
 """
 views.py  –  All Discord UI components for the penalty shootout bot.
 
-Improvements:
-- No ephemeral popups — the public embed updates to show ✅ who has locked in
-- Animated step-by-step reveal: suspense → run-up → directions → result → score
-- asyncio.Lock for thread-safe round resolution
+Visual: emoji front-view goal (posts, net, pitch, ball on spot).
+        Keeper and ball animate into position during the reveal.
+Fixed embed size — goal frame present on every state, no resize.
 """
 
 import asyncio
 import discord
 from discord.ui import View, Button, button as ui_button
-from game import Game, GOAL_FRAME
+from game import Game
 
 # ── Colours ──────────────────────────────────────────────────────
 C_BLUE   = 0x3B82F6
@@ -23,91 +22,171 @@ C_PURPLE = 0x8B5CF6
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Embed builders
+#  Goal renderer
+# ═══════════════════════════════════════════════════════════════════
+#
+#  The goal is a 9-wide emoji grid (cols 0-8).
+#  Three zones:  LEFT = cols 1-2 | CENTRE = cols 3-5 | RIGHT = cols 6-7
+#  Posts = col 0 & 8  (🟫)  Crossbar row = top row
+#
+#  ball_dir / keeper_dir: "left" | "centre" | "right" | None
+
+# Centre column for each zone (where the emoji appears)
+ZONE_COL = {"left": 1, "centre": 4, "right": 7}
+
+POST  = "🟫"
+NET   = "⬛"
+GRASS = "🟩"
+SPOT  = "⚽"   # ball on penalty spot (always shown on pitch row)
+
+
+def _build_goal(ball_dir=None, keeper_dir=None, ball_in_net=False, keeper_visible=True) -> str:
+    """
+    Returns a 6-line emoji goal string.
+    - keeper_visible: always show keeper (centre if no dir given)
+    - ball_dir      : zone ball went (shown in net when ball_in_net=True)
+    - keeper_dir    : zone keeper dived (replaces centre standing position)
+    - ball_in_net   : show ball inside net
+    """
+    WIDTH = 9
+
+    net = [[NET] * WIDTH for _ in range(3)]
+
+    for row in net:
+        row[0] = POST
+        row[8] = POST
+
+    # Keeper always visible — centre by default, dives to dir when revealed
+    if keeper_visible:
+        col = ZONE_COL[keeper_dir] if keeper_dir is not None else ZONE_COL["centre"]
+        net[1][col] = "🧤"
+
+    # Ball in net
+    if ball_in_net and ball_dir is not None:
+        col = ZONE_COL[ball_dir]
+        if keeper_dir is not None and ZONE_COL[keeper_dir] == col:
+            net[2][col] = "🚫"   # blocked
+        else:
+            net[2][col] = SPOT
+
+    # Crossbar row (top)
+    crossbar = POST + "🟨" * 7 + POST
+
+    # Assemble rows
+    rows = [crossbar]
+    for row in net:
+        rows.append("".join(row))
+
+    # Pitch rows
+    rows.append(GRASS * WIDTH)
+    rows.append(GRASS * 4 + SPOT + GRASS * 4)   # ball on spot
+
+    return "\n".join(rows)
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Embed builders  (fixed layout — goal frame always present)
 # ═══════════════════════════════════════════════════════════════════
 
-def embed_match(game: Game, shooter_ready: bool = False, keeper_ready: bool = False) -> discord.Embed:
-    shooter_status = "✅ **Locked in!**" if shooter_ready else "⏳ Choosing…"
-    keeper_status  = "✅ **Locked in!**" if keeper_ready  else "⏳ Choosing…"
+def _score_field(game):
+    return game.score_line()
 
-    desc = (
-        f"{GOAL_FRAME}\n"
-        f"*Shooter picks where to kick — Goalkeeper picks where to dive.*\n"
-        f"*Same direction = 🧤 Save  |  Different = ⚽ Goal*\n\n"
-        f"🎯 **{game.shooter.display_name}** (Shooter) — {shooter_status}\n"
-        f"🧤 **{game.goalkeeper.display_name}** (Goalkeeper) — {keeper_status}"
+def _target_field(game):
+    return f"First to **{game.goal_target}** goals"
+
+
+def embed_match(game: Game, shooter_ready=False, keeper_ready=False) -> discord.Embed:
+    s = "✅ **Locked in!**" if shooter_ready else "⏳ Choosing…"
+    k = "✅ **Locked in!**" if keeper_ready  else "⏳ Choosing…"
+    e = discord.Embed(
+        title=f"⚽  PENALTY SHOOTOUT  •  Round {game.round_num}",
+        description=(
+            f"```\n{_build_goal()}\n```"
+            f"🎯 **{game.shooter.display_name}** — {s}\n"
+            f"🧤 **{game.goalkeeper.display_name}** — {k}"
+        ),
+        color=C_BLUE,
     )
-
-    e = discord.Embed(title=f"⚽  PENALTY SHOOTOUT  •  Round {game.round_num}", description=desc, color=C_BLUE)
-    e.add_field(name="📊 Score", value=game.score_line(), inline=True)
-    e.add_field(name="🏆 Target", value=f"First to **{game.goal_target}** goals", inline=True)
-    e.set_footer(text="Both players must choose within 30 s  •  Only you can see your pick")
+    e.add_field(name="📊 Score",    value=_score_field(game),  inline=True)
+    e.add_field(name="🏆 Target",   value=_target_field(game), inline=True)
+    e.set_footer(text="Pick a direction  •  Your choice is secret  •  30 s")
     return e
 
 
 def embed_suspense(game: Game) -> discord.Embed:
-    return discord.Embed(
+    e = discord.Embed(
         title="🎬  Both players have chosen!",
         description=(
-            f"🎯 **{game.shooter.display_name}** steps up to the ball…\n"
-            f"🧤 **{game.goalkeeper.display_name}** crouches on the line…\n\n"
-            "```\n"
-            "  👟  ⚽                          🥅\n"
-            "```\n"
-            "*The stadium holds its breath…*"
+            f"```\n{_build_goal()}\n```"
+            f"🎯 **{game.shooter.display_name}** steps up…\n"
+            f"🧤 **{game.goalkeeper.display_name}** crouches on the line…\n"
+            f"*The stadium holds its breath…*"
         ),
         color=C_PURPLE,
     )
+    e.add_field(name="📊 Score",  value=_score_field(game),  inline=True)
+    e.add_field(name="🏆 Target", value=_target_field(game), inline=True)
+    e.set_footer(text="Revealing…")
+    return e
 
 
 def embed_run_up(game: Game) -> discord.Embed:
-    return discord.Embed(
-        title="💨  The run-up…",
+    e = discord.Embed(
+        title="💨  The run-up!",
         description=(
-            "```\n"
-            "      ⚽ ────────────────────► 🥅\n"
-            "```\n"
-            f"**{game.shooter.display_name}** strikes the ball!"
+            f"```\n{_build_goal()}\n```"
+            f"**{game.shooter.display_name}** charges and STRIKES! 🦵"
         ),
         color=C_ORANGE,
     )
+    e.add_field(name="📊 Score",  value=_score_field(game),  inline=True)
+    e.add_field(name="🏆 Target", value=_target_field(game), inline=True)
+    e.set_footer(text="Where did it go…?")
+    return e
 
 
-def embed_reveal_directions(game: Game, result: dict) -> discord.Embed:
-    return discord.Embed(
-        title="👀  Directions Revealed!",
+def embed_ball_flying(game: Game, ball_dir: str) -> discord.Embed:
+    """Ball shown in net, keeper not yet revealed."""
+    e = discord.Embed(
+        title="⚽  Ball in the air!",
         description=(
-            f"🎯 **{game.shooter.display_name}** kicked  →  **{result['shooter_dir']}**\n"
-            f"🧤 **{game.goalkeeper.display_name}** dived   →  **{result['keeper_dir']}**\n\n"
-            "*Calculating…*"
+            f"```\n{_build_goal(ball_dir=ball_dir, ball_in_net=True)}\n```"
+            f"🎯 **{game.shooter.display_name}** kicked **{ball_dir.upper()}**\n"
+            f"🧤 **{game.goalkeeper.display_name}** dived… *which way?*"
         ),
         color=C_ORANGE,
     )
+    e.add_field(name="📊 Score",  value=_score_field(game),  inline=True)
+    e.add_field(name="🏆 Target", value=_target_field(game), inline=True)
+    e.set_footer(text="Revealing keeper…")
+    return e
 
 
 def embed_result(game: Game, result: dict) -> discord.Embed:
+    bd = result["shooter_raw"]
+    kd = result["keeper_raw"]
+
     if result["is_goal"]:
-        color   = C_GREEN
-        title   = "⚽  G O A L !"
+        color  = C_GREEN
+        title  = "⚽  G O A L !"
         outcome = f"✅  **{game.shooter.display_name}** scores!"
-        visual  = "```\n  👟  ⚽ ──────────────────── 🎉\n```"
     else:
-        color   = C_RED
-        title   = "🧤  S A V E D !"
+        color  = C_RED
+        title  = "🧤  S A V E D !"
         outcome = f"🛑  **{game.goalkeeper.display_name}** keeps it out!"
-        visual  = "```\n  👟  ⚽ ──────────► 🧤 BLOCKED\n```"
 
     e = discord.Embed(
         title=title,
         description=(
-            f"🎯 **{game.shooter.display_name}** kicked  →  **{result['shooter_dir']}**\n"
-            f"🧤 **{game.goalkeeper.display_name}** dived   →  **{result['keeper_dir']}**\n\n"
-            f"{visual}\n"
+            f"```\n{_build_goal(ball_dir=bd, keeper_dir=kd, ball_in_net=True)}\n```"
+            f"🎯 **{game.shooter.display_name}** kicked  **{result['shooter_dir']}**\n"
+            f"🧤 **{game.goalkeeper.display_name}** dived   **{result['keeper_dir']}**\n\n"
             f"{outcome}"
         ),
         color=color,
     )
-    e.add_field(name="📊 Updated Score", value=game.score_line(), inline=False)
+    e.add_field(name="📊 Updated Score", value=_score_field(game),  inline=True)
+    e.add_field(name="🏆 Target",        value=_target_field(game), inline=True)
     return e
 
 
@@ -115,10 +194,8 @@ def embed_winner(game: Game, winner: discord.Member) -> discord.Embed:
     e = discord.Embed(
         title="🏆  M A T C H  O V E R",
         description=(
-            f"🎉🎉  **{winner.display_name}** wins the penalty shootout!  🎉🎉\n\n"
-            "```\n"
-            "  ⚽  ⚽  ⚽  ⚽  ⚽  🏆\n"
-            "```"
+            f"```\n{_build_goal()}\n```"
+            f"🎉  **{winner.display_name}** wins the penalty shootout!  🎉"
         ),
         color=C_GOLD,
     )
@@ -128,9 +205,9 @@ def embed_winner(game: Game, winner: discord.Member) -> discord.Embed:
             f"🎯 **{game.shooter.display_name}:** {game.score_shooter} ⚽\n"
             f"🧤 **{game.goalkeeper.display_name}:** {game.score_goalkeeper} ⚽"
         ),
-        inline=False,
+        inline=True,
     )
-    e.add_field(name="👑 Champion", value=f"{winner.mention} — absolute legend! 🔥", inline=False)
+    e.add_field(name="👑 Champion", value=f"{winner.mention} — absolute legend! 🔥", inline=True)
     e.set_footer(text="GG WP! Use /penalty @shooter @goalkeeper <goals> to play again.")
     return e
 
@@ -154,16 +231,11 @@ class ChallengeView(View):
     async def accept(self, interaction: discord.Interaction, btn: Button):
         valid_ids = {self.game.shooter.id, self.game.goalkeeper.id}
         if interaction.user.id not in valid_ids:
-            await interaction.response.send_message(
-                "⛔ You're not part of this challenge.", ephemeral=True
-            )
+            await interaction.response.send_message("⛔ You're not part of this challenge.", ephemeral=True)
             return
         if interaction.user.id == self.game.host.id:
-            await interaction.response.send_message(
-                "⛔ The host can't accept their own challenge.", ephemeral=True
-            )
+            await interaction.response.send_message("⛔ The host can't accept their own challenge.", ephemeral=True)
             return
-
         await interaction.response.defer()
         self.stop()
         view = PenaltyView(self.game, self.active_games, self.message)
@@ -174,11 +246,8 @@ class ChallengeView(View):
     async def decline(self, interaction: discord.Interaction, btn: Button):
         valid_ids = {self.game.shooter.id, self.game.goalkeeper.id}
         if interaction.user.id not in valid_ids:
-            await interaction.response.send_message(
-                "⛔ You're not part of this challenge.", ephemeral=True
-            )
+            await interaction.response.send_message("⛔ You're not part of this challenge.", ephemeral=True)
             return
-
         await interaction.response.defer()
         self.stop()
         await self.message.edit(
@@ -202,12 +271,6 @@ class ChallengeView(View):
 # ═══════════════════════════════════════════════════════════════════
 
 class PenaltyView(View):
-    """
-    Three direction buttons. No ephemeral popups — the embed itself
-    updates to show who has locked in (without revealing direction).
-    Once both choose, a multi-step animated reveal plays out.
-    """
-
     def __init__(self, game: Game, active_games: dict, message: discord.Message):
         super().__init__(timeout=30)
         self.game         = game
@@ -235,33 +298,21 @@ class PenaltyView(View):
         valid_ids = {game.shooter.id, game.goalkeeper.id}
 
         if interaction.user.id not in valid_ids:
-            await interaction.response.send_message(
-                "⛔ You're not playing in this match!", ephemeral=True
-            )
+            await interaction.response.send_message("⛔ You're not playing in this match!", ephemeral=True)
             return
-
         if interaction.user.id in game.voted:
-            await interaction.response.send_message(
-                "✋ You've already locked in — waiting for your opponent!", ephemeral=True
-            )
+            await interaction.response.send_message("✋ Already locked in — waiting for opponent!", ephemeral=True)
             return
-
         if self._resolved:
-            await interaction.response.send_message(
-                "⚡ Round already resolved!", ephemeral=True
-            )
+            await interaction.response.send_message("⚡ Round already resolved!", ephemeral=True)
             return
 
-        # Acknowledge silently — no popup
         await interaction.response.defer()
 
         async with self._lock:
             if self._resolved:
                 return
-
             both_done = game.record_choice(interaction.user, direction)
-
-            # Update embed to show who has locked in (direction stays secret)
             shooter_ready = game.choice_shooter is not None
             keeper_ready  = game.choice_goalkeeper is not None
             try:
@@ -270,10 +321,8 @@ class PenaltyView(View):
                 )
             except Exception:
                 pass
-
             if not both_done:
                 return
-
             self._resolved = True
 
         self.stop()
@@ -282,25 +331,31 @@ class PenaltyView(View):
     async def _animate_and_resolve(self):
         game = self.game
 
-        # Step 1 — suspense
+        # Capture directions before resolve wipes them
+        shooter_dir_raw = game.choice_shooter
+        keeper_dir_raw  = game.choice_goalkeeper
+
+        # Step 1 — suspense (empty goal)
         await self.message.edit(embed=embed_suspense(game), view=None)
         await asyncio.sleep(1.5)
 
-        # Step 2 — run-up
+        # Step 2 — run-up (empty goal)
         await self.message.edit(embed=embed_run_up(game), view=None)
         await asyncio.sleep(1.2)
 
-        # Resolve the round
+        # Resolve
         result = game.resolve_round()
+        result["shooter_raw"] = shooter_dir_raw
+        result["keeper_raw"]  = keeper_dir_raw
         winner = game.get_winner()
 
-        # Step 3 — reveal directions
-        await self.message.edit(embed=embed_reveal_directions(game, result), view=None)
-        await asyncio.sleep(1.5)
+        # Step 3 — ball in net, keeper hidden
+        await self.message.edit(embed=embed_ball_flying(game, shooter_dir_raw), view=None)
+        await asyncio.sleep(1.3)
 
-        # Step 4 — goal / save + score
+        # Step 4 — keeper revealed + result verdict
         await self.message.edit(embed=embed_result(game, result), view=None)
-        await asyncio.sleep(2.5)
+        await asyncio.sleep(2.8)
 
         # Step 5 — winner or next round
         if winner:
@@ -325,8 +380,7 @@ class PenaltyView(View):
         try:
             await self.message.edit(
                 embed=embed_cancelled(
-                    f"⏰ Round timed out — **{who}** didn't choose in time.\n\n"
-                    f"{game.score_line()}"
+                    f"⏰ Round timed out — **{who}** didn't choose in time.\n\n{game.score_line()}"
                 ),
                 view=None,
             )
