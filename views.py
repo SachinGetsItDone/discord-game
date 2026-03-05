@@ -63,11 +63,13 @@ def _build_goal(ball_dir=None, keeper_dir=None, ball_in_net=False, keeper_visibl
 
     # Ball in net
     if ball_in_net and ball_dir is not None:
-        col = ZONE_COL[ball_dir]
-        if keeper_dir is not None and ZONE_COL[keeper_dir] == col:
-            net[2][col] = "🚫"   # blocked
+        bcol = ZONE_COL[ball_dir]
+        if keeper_dir is not None and ZONE_COL[keeper_dir] == bcol:
+            # Save: glove catches ball — show glove in both rows, no ball
+            net[1][bcol] = "🧤"
+            net[2][bcol] = "🧤"
         else:
-            net[2][col] = SPOT
+            net[2][bcol] = "⚽"
 
     # Crossbar row (top)
     crossbar = POST + "🟨" * 7 + POST
@@ -79,7 +81,7 @@ def _build_goal(ball_dir=None, keeper_dir=None, ball_in_net=False, keeper_visibl
 
     # Pitch rows
     rows.append(GRASS * WIDTH)
-    rows.append(GRASS * 4 + SPOT + GRASS * 4)   # ball on spot
+    rows.append(GRASS * WIDTH if ball_in_net else GRASS * 4 + SPOT + GRASS * 4)
 
     return "\n".join(rows)
 
@@ -145,14 +147,14 @@ def embed_run_up(game: Game) -> discord.Embed:
     return e
 
 
-def embed_ball_flying(game: Game, ball_dir: str) -> discord.Embed:
-    """Ball shown in net, keeper not yet revealed."""
+def embed_ball_flying(game: Game, ball_dir: str, keeper_dir: str) -> discord.Embed:
+    """Ball and keeper both shown in their chosen zones. Save = glove only."""
     e = discord.Embed(
         title="⚽  Ball in the air!",
         description=(
-            f"```\n{_build_goal(ball_dir=ball_dir, ball_in_net=True)}\n```"
+            f"```\n{_build_goal(ball_dir=ball_dir, keeper_dir=keeper_dir, ball_in_net=True)}\n```"
             f"🎯 **{game.shooter.display_name}** kicked **{ball_dir.upper()}**\n"
-            f"🧤 **{game.goalkeeper.display_name}** dived… *which way?*"
+            f"🧤 **{game.goalkeeper.display_name}** dived **{keeper_dir.upper()}**"
         ),
         color=C_ORANGE,
     )
@@ -337,11 +339,11 @@ class PenaltyView(View):
 
         # Step 1 — suspense (empty goal)
         await self.message.edit(embed=embed_suspense(game), view=None)
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(0.6)
 
         # Step 2 — run-up (empty goal)
         await self.message.edit(embed=embed_run_up(game), view=None)
-        await asyncio.sleep(1.2)
+        await asyncio.sleep(0.5)
 
         # Resolve
         result = game.resolve_round()
@@ -349,13 +351,13 @@ class PenaltyView(View):
         result["keeper_raw"]  = keeper_dir_raw
         winner = game.get_winner()
 
-        # Step 3 — ball in net, keeper hidden
-        await self.message.edit(embed=embed_ball_flying(game, shooter_dir_raw), view=None)
-        await asyncio.sleep(1.3)
+        # Step 3 — ball AND keeper both revealed in their zones simultaneously
+        await self.message.edit(embed=embed_ball_flying(game, shooter_dir_raw, keeper_dir_raw), view=None)
+        await asyncio.sleep(0.8)
 
-        # Step 4 — keeper revealed + result verdict
+        # Step 4 — result verdict with score update
         await self.message.edit(embed=embed_result(game, result), view=None)
-        await asyncio.sleep(2.8)
+        await asyncio.sleep(1.2)
 
         # Step 5 — winner or next round
         if winner:
