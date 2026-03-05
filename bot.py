@@ -20,7 +20,7 @@ from discord.ext import commands
 from game import Game
 from views import ChallengeView, C_BLUE
 
-TOKEN = os.getenv("DISCORD_TOKEN", "MTQ3OTA3MzAzNTAzNzE4MDA1NQ.GaP38f.lErRzhbX4U0xQR8Gf7T4FLK_85euKURUndINAk")
+TOKEN = os.getenv("DISCORD_TOKEN")
 
 # ── Bot ──────────────────────────────────────────────────────────
 intents = discord.Intents.default()
