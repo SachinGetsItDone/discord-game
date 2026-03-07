@@ -322,7 +322,7 @@ class TournamentSetupView(View):
             self.add_item(b)
 
         # Start button
-        self.start_btn = Button(label="▶️  Start Match", style=discord.ButtonStyle.success, row=3, disabled=True)
+        self.start_btn = Button(label="▶️  Start Match", style=discord.ButtonStyle.success, row=3, disabled=True, custom_id="start_match")
         self.start_btn.callback = self._start
         self.add_item(self.start_btn)
 
@@ -344,8 +344,12 @@ class TournamentSetupView(View):
         if interaction.user.id != self.host.id:
             await interaction.response.send_message("⛔ Only the host can set this up.", ephemeral=True)
             return
-        uid = list(interaction.data["resolved"]["users"].keys())[0]
-        self.shooter = interaction.guild.get_member(int(uid))
+        uid = int(interaction.data["values"][0])
+        self.shooter = interaction.guild.get_member(uid) or await interaction.guild.fetch_member(uid)
+        if self.shooter and self.shooter.bot:
+            self.shooter = None
+            await interaction.response.send_message("⛔ Bots can't play.", ephemeral=True)
+            return
         await interaction.response.defer()
         await self._refresh()
 
@@ -353,8 +357,12 @@ class TournamentSetupView(View):
         if interaction.user.id != self.host.id:
             await interaction.response.send_message("⛔ Only the host can set this up.", ephemeral=True)
             return
-        uid = list(interaction.data["resolved"]["users"].keys())[0]
-        self.goalkeeper = interaction.guild.get_member(int(uid))
+        uid = int(interaction.data["values"][0])
+        self.goalkeeper = interaction.guild.get_member(uid) or await interaction.guild.fetch_member(uid)
+        if self.goalkeeper and self.goalkeeper.bot:
+            self.goalkeeper = None
+            await interaction.response.send_message("⛔ Bots can't play.", ephemeral=True)
+            return
         await interaction.response.defer()
         await self._refresh()
 
@@ -369,7 +377,7 @@ class TournamentSetupView(View):
 
         # Enable/disable start
         for item in self.children:
-            if isinstance(item, Button) and item.custom_id is None and item.label and "Start" in item.label:
+            if isinstance(item, Button) and item.custom_id == "start_match":
                 item.disabled = not both_set or same or either_bot
 
         warning = ""
