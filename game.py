@@ -1,12 +1,13 @@
 """
 game.py  –  Game state for Penalty Shootout bot.
 
-Two modes:
-  TOURNAMENT  – host assigns shooter & goalkeeper, N shots, highest goals wins
-  FRIENDLY    – 2 players, roles assigned RANDOMLY at match start, fixed all game
+Real penalty shootout format:
+  - Player A shoots all their shots first (rounds 1 to total_shots)
+  - Then Player B shoots all their shots (rounds total_shots+1 to total_shots*2)
+  - Most goals wins. Draw possible.
 
-Scoring: only GOALS count. Saves score nothing.
-All shots played out — winner = most goals. Draw possible.
+Both modes (tournament & friendly) use this same format.
+In friendly, shooter/goalkeeper are assigned randomly.
 """
 
 import random
@@ -26,73 +27,103 @@ MODE_FRIENDLY   = "friendly"
 
 @dataclass
 class Game:
-    mode:        str
-    host:        discord.Member
-    shooter:     discord.Member   # fixed for entire match
-    goalkeeper:  discord.Member   # fixed for entire match
-    total_shots: int = 5
+    mode:       str
+    host:       discord.Member
+    player_a:   discord.Member  # shoots first half
+    player_b:   discord.Member  # shoots second half
+    keeper_a:   discord.Member  # keeps goal while B shoots (= player_b)
+    keeper_b:   discord.Member  # keeps goal while A shoots (= player_a)
+    total_shots: int = 5        # shots per player
 
-    score_shooter:    int = 0
-    score_goalkeeper: int = 0
-    round_num:        int = 1
+    score_a:  int = 0  # goals scored by player_a
+    score_b:  int = 0  # goals scored by player_b
+    round_num: int = 1  # 1-indexed, goes up to total_shots * 2
 
     voted: set = field(default_factory=set)
-
-    # internal per-round choices (set via record_choice)
     _choice_shooter:    Optional[str] = field(default=None, repr=False)
     _choice_goalkeeper: Optional[str] = field(default=None, repr=False)
 
     # ── Factories ────────────────────────────────────────────────────
 
     @classmethod
-    def tournament(cls, host, shooter, goalkeeper, total_shots=5):
+    def tournament(cls, host, player_a, player_b, total_shots=5):
+        """player_a shoots first, player_b shoots second."""
         return cls(
             mode=MODE_TOURNAMENT,
             host=host,
-            shooter=shooter,
-            goalkeeper=goalkeeper,
+            player_a=player_a,
+            player_b=player_b,
+            keeper_a=player_b,  # player_b keeps while A shoots
+            keeper_b=player_a,  # player_a keeps while B shoots
             total_shots=total_shots,
         )
 
     @classmethod
-    def friendly(cls, player_a, player_b, total_shots=5):
-        """Randomly assign shooter and goalkeeper."""
+    def friendly(cls, challenger, accepter, total_shots=5):
+        """Randomly decide who shoots first."""
         if random.random() < 0.5:
-            shooter, goalkeeper = player_a, player_b
+            first, second = challenger, accepter
         else:
-            shooter, goalkeeper = player_b, player_a
+            first, second = accepter, challenger
         return cls(
             mode=MODE_FRIENDLY,
-            host=player_a,
-            shooter=shooter,
-            goalkeeper=goalkeeper,
+            host=challenger,
+            player_a=first,
+            player_b=second,
+            keeper_a=second,
+            keeper_b=first,
             total_shots=total_shots,
         )
 
+    # ── Role helpers (who is shooting/keeping THIS round) ───────────
+
+    @property
+    def shooter(self) -> discord.Member:
+        """Player A shoots rounds 1..total_shots, B shoots the rest."""
+        return self.player_a if self.round_num <= self.total_shots else self.player_b
+
+    @property
+    def goalkeeper(self) -> discord.Member:
+        return self.keeper_a if self.round_num <= self.total_shots else self.keeper_b
+
+    @property
+    def half(self) -> int:
+        """1 = first half (A shooting), 2 = second half (B shooting)."""
+        return 1 if self.round_num <= self.total_shots else 2
+
+    @property
+    def shot_in_half(self) -> int:
+        """Shot number within current half (1-indexed)."""
+        if self.half == 1:
+            return self.round_num
+        return self.round_num - self.total_shots
+
     # ── State helpers ────────────────────────────────────────────────
 
+    def total_rounds(self) -> int:
+        return self.total_shots * 2
+
     def is_over(self) -> bool:
-        return self.round_num > self.total_shots
+        return self.round_num > self.total_rounds()
+
+    def shots_remaining(self) -> int:
+        return max(0, self.total_rounds() - self.round_num + 1)
 
     def get_winner(self) -> Optional[discord.Member]:
         if not self.is_over():
             return None
-        if self.score_shooter > self.score_goalkeeper:
-            return self.shooter
-        if self.score_goalkeeper > self.score_shooter:
-            return self.goalkeeper
+        if self.score_a > self.score_b:
+            return self.player_a
+        if self.score_b > self.score_a:
+            return self.player_b
         return None  # draw
 
     def is_draw(self) -> bool:
-        return self.is_over() and self.score_shooter == self.score_goalkeeper
-
-    def shots_remaining(self) -> int:
-        return max(0, self.total_shots - self.round_num + 1)
+        return self.is_over() and self.score_a == self.score_b
 
     # ── Choice recording ─────────────────────────────────────────────
 
     def record_choice(self, player: discord.Member, direction: str) -> bool:
-        """Store direction for shooter or goalkeeper. Returns True when both done."""
         if player.id == self.shooter.id:
             self._choice_shooter = direction
         elif player.id == self.goalkeeper.id:
@@ -113,9 +144,11 @@ class Game:
             "keeper_raw":  k_dir,
         }
 
-        # Only goals score — saves give nothing
         if is_goal:
-            self.score_shooter += 1
+            if self.shooter.id == self.player_a.id:
+                self.score_a += 1
+            else:
+                self.score_b += 1
 
         self._choice_shooter    = None
         self._choice_goalkeeper = None
@@ -125,6 +158,6 @@ class Game:
 
     def score_line(self) -> str:
         return (
-            f"🎯  **{self.shooter.display_name}** (Shooter):    {self.score_shooter} ⚽\n"
-            f"🧤  **{self.goalkeeper.display_name}** (Goalkeeper): {self.score_goalkeeper} ⚽"
+            f"🎯  **{self.player_a.display_name}:** {self.score_a} ⚽\n"
+            f"🎯  **{self.player_b.display_name}:** {self.score_b} ⚽"
         )
