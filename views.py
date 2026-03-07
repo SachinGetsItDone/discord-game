@@ -14,7 +14,7 @@ Flow:
 import asyncio
 import discord
 from discord import app_commands
-from discord.ui import View, Button, Modal, TextInput, button as ui_button
+from discord.ui import View, Button, button as ui_button
 from game import Game, MODE_TOURNAMENT, MODE_FRIENDLY, DIRECTIONS
 
 # ── Colours ──────────────────────────────────────────────────────
@@ -229,10 +229,15 @@ class ModeSelectView(View):
         if interaction.user.id != self.host.id:
             await interaction.response.send_message("⛔ Only the host can set up the match.", ephemeral=True)
             return
-        await interaction.response.send_modal(
-            TournamentSetupModal(host=self.host, active_games=self.active_games, message=self.message)
-        )
+        await interaction.response.defer()
         self.stop()
+        embed = discord.Embed(
+            title="🏆   T O U R N A M E N T   S E T U P",
+            description="Select the **Shooter** from your server members:",
+            color=C_BLUE,
+        )
+        view = TournamentSetupView(host=self.host, active_games=self.active_games, message=self.message)
+        await self.message.edit(embed=embed, view=view)
 
     @ui_button(label="🤝  Friendly", style=discord.ButtonStyle.secondary)
     async def friendly(self, interaction: discord.Interaction, btn: Button):
@@ -272,101 +277,147 @@ class ModeSelectView(View):
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Tournament Setup Modal
+#  Tournament Setup  (in-chat user select menus)
 # ═══════════════════════════════════════════════════════════════════
 
-class TournamentSetupModal(Modal, title="🏆 Tournament Setup"):
-    shooter_input    = TextInput(label="Shooter's username or @mention",    placeholder="e.g. john or @john",  max_length=50)
-    goalkeeper_input = TextInput(label="Goalkeeper's username or @mention", placeholder="e.g. jane or @jane", max_length=50)
-    shots_input      = TextInput(label="Shots each (1–10)", placeholder="5", default="5", max_length=2)
-
+class TournamentSetupView(View):
+    """
+    Step 1: Host picks the Shooter via a UserSelect menu.
+    Step 2: Host picks the Goalkeeper via a UserSelect menu.
+    Step 3: Host picks shot count via buttons.
+    All happens in-chat, no modal popup.
+    """
     def __init__(self, host: discord.Member, active_games: dict, message: discord.Message):
-        super().__init__()
+        super().__init__(timeout=120)
         self.host         = host
         self.active_games = active_games
         self.message      = message
+        self.shooter: discord.Member | None    = None
+        self.goalkeeper: discord.Member | None = None
 
-    async def on_submit(self, interaction: discord.Interaction):
-        # Parse shots
-        try:
-            shots = int(self.shots_input.value.strip())
-            if not 1 <= shots <= 10:
-                raise ValueError
-        except ValueError:
-            await interaction.response.send_message("⛔ Shots must be a number between 1 and 10.", ephemeral=True)
-            return
+        # Step 1: pick shooter
+        self._add_shooter_select()
 
-        # Resolve shooter
-        shooter = await _resolve_member(interaction, self.shooter_input.value.strip())
-        if shooter is None:
-            await interaction.response.send_message(
-                f"⛔ Could not find member: `{self.shooter_input.value}`", ephemeral=True
+    def _add_shooter_select(self):
+        self.clear_items()
+        select = discord.ui.UserSelect(placeholder="🎯  Select the Shooter…", min_values=1, max_values=1)
+        select.callback = self._shooter_chosen
+        self.add_item(select)
+
+    def _add_goalkeeper_select(self):
+        self.clear_items()
+        select = discord.ui.UserSelect(placeholder="🧤  Select the Goalkeeper…", min_values=1, max_values=1)
+        select.callback = self._goalkeeper_chosen
+        self.add_item(select)
+
+    def _add_shot_buttons(self):
+        self.clear_items()
+        for n in [3, 5, 7, 10]:
+            b = Button(label=f"{n} shots", style=discord.ButtonStyle.primary)
+            b.callback = self._make_shots_cb(n)
+            self.add_item(b)
+
+    def _make_shots_cb(self, n: int):
+        async def cb(interaction: discord.Interaction):
+            if interaction.user.id != self.host.id:
+                await interaction.response.send_message("⛔ Only the host can set this up.", ephemeral=True)
+                return
+            await interaction.response.defer()
+            self.stop()
+
+            game = Game(
+                mode=MODE_TOURNAMENT,
+                host=self.host,
+                player_a=self.shooter,
+                player_b=self.goalkeeper,
+                total_shots=n,
             )
-            return
 
-        # Resolve goalkeeper
-        goalkeeper = await _resolve_member(interaction, self.goalkeeper_input.value.strip())
-        if goalkeeper is None:
-            await interaction.response.send_message(
-                f"⛔ Could not find member: `{self.goalkeeper_input.value}`", ephemeral=True
+            embed = discord.Embed(
+                title="🏆   T O U R N A M E N T   C H A L L E N G E",
+                description=(
+                    f"🎙️  **Host:** {self.host.mention} has set up a match!\n\n"
+                    f"🎯  **Shooter:**      {self.shooter.mention}\n"
+                    f"🧤  **Goalkeeper:**   {self.goalkeeper.mention}\n"
+                    f"🔢  **Shots each:**   {n}\n\n"
+                    f"**{self.shooter.display_name}** or **{self.goalkeeper.display_name}** — accept or decline!"
+                ),
+                color=C_BLUE,
             )
-            return
+            embed.add_field(name="📋 Rules", value=(
+                "• Both secretly pick ⬅️ Left, ⬆️ Centre or ➡️ Right\n"
+                "• **Same direction** → 🧤 Save\n"
+                "• **Different** → ⚽ Goal\n"
+                f"• **{n} shots** each — most goals wins!"
+            ), inline=False)
+            embed.set_footer(text="Challenge expires in 60 s")
 
-        if shooter.bot or goalkeeper.bot:
+            view = ChallengeView(game=game, active_games=self.active_games)
+            await self.message.edit(embed=embed, view=view)
+            view.message = self.message
+
+        return cb
+
+    async def _shooter_chosen(self, interaction: discord.Interaction):
+        if interaction.user.id != self.host.id:
+            await interaction.response.send_message("⛔ Only the host can set this up.", ephemeral=True)
+            return
+        member = interaction.data["resolved"]["users"]
+        uid = list(member.keys())[0]
+        self.shooter = interaction.guild.get_member(int(uid))
+
+        if self.shooter and self.shooter.bot:
             await interaction.response.send_message("⛔ Bots can't play.", ephemeral=True)
             return
-        if shooter.id == goalkeeper.id:
-            await interaction.response.send_message("⛔ Shooter and goalkeeper must be different people.", ephemeral=True)
-            return
 
-        game = Game(
-            mode=MODE_TOURNAMENT,
-            host=self.host,
-            player_a=shooter,
-            player_b=goalkeeper,
-            total_shots=shots,
-        )
+        await interaction.response.defer()
+        self._add_goalkeeper_select()
 
         embed = discord.Embed(
-            title="🏆  TOURNAMENT CHALLENGE",
+            title="🏆   T O U R N A M E N T   S E T U P",
             description=(
-                f"🎙️ **Host:** {self.host.mention} has set up a match!\n\n"
-                f"🎯 **Shooter:**    {shooter.mention}\n"
-                f"🧤 **Goalkeeper:** {goalkeeper.mention}\n"
-                f"🔢 **Shots each:** {shots}\n\n"
-                f"**{shooter.display_name}** or **{goalkeeper.display_name}** — accept or decline!"
+                f"✅  **Shooter:** {self.shooter.mention}\n\n"
+                f"Now select the **Goalkeeper**:"
             ),
             color=C_BLUE,
         )
-        embed.add_field(name="📋 Rules", value=(
-            "• Both secretly pick ⬅️ Left, ⬆️ Centre or ➡️ Right\n"
-            "• **Same direction** → 🧤 Save\n"
-            "• **Different** → ⚽ Goal\n"
-            f"• **{shots} shots** — most goals wins!"
-        ), inline=False)
-        embed.set_footer(text="Challenge expires in 60 s")
+        await self.message.edit(embed=embed, view=self)
 
-        view = ChallengeView(game=game, active_games=self.active_games)
+    async def _goalkeeper_chosen(self, interaction: discord.Interaction):
+        if interaction.user.id != self.host.id:
+            await interaction.response.send_message("⛔ Only the host can set this up.", ephemeral=True)
+            return
+        member = interaction.data["resolved"]["users"]
+        uid = list(member.keys())[0]
+        self.goalkeeper = interaction.guild.get_member(int(uid))
+
+        if self.goalkeeper and self.goalkeeper.bot:
+            await interaction.response.send_message("⛔ Bots can't play.", ephemeral=True)
+            return
+        if self.goalkeeper.id == self.shooter.id:
+            await interaction.response.send_message("⛔ Shooter and goalkeeper must be different people.", ephemeral=True)
+            return
+
         await interaction.response.defer()
-        await self.message.edit(embed=embed, view=view)
-        view.message = self.message
+        self._add_shot_buttons()
 
+        embed = discord.Embed(
+            title="🏆   T O U R N A M E N T   S E T U P",
+            description=(
+                f"✅  **Shooter:**    {self.shooter.mention}\n"
+                f"✅  **Goalkeeper:** {self.goalkeeper.mention}\n\n"
+                f"How many shots each?"
+            ),
+            color=C_BLUE,
+        )
+        await self.message.edit(embed=embed, view=self)
 
-async def _resolve_member(interaction: discord.Interaction, text: str) -> discord.Member | None:
-    """Try to resolve a member from a mention or username string."""
-    # Strip <@123> mention format
-    if text.startswith("<@") and text.endswith(">"):
-        uid = text.strip("<@!>")
-        try:
-            return interaction.guild.get_member(int(uid)) or await interaction.guild.fetch_member(int(uid))
-        except Exception:
-            return None
-    # Try by display name / username
-    text_lower = text.lstrip("@").lower()
-    for m in interaction.guild.members:
-        if m.name.lower() == text_lower or m.display_name.lower() == text_lower:
-            return m
-    return None
+    async def on_timeout(self):
+        if self.message:
+            try:
+                await self.message.edit(embed=embed_cancelled("Tournament setup expired."), view=None)
+            except Exception:
+                pass
 
 
 # ═══════════════════════════════════════════════════════════════════
