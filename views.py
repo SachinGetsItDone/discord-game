@@ -214,256 +214,17 @@ def embed_cancelled(reason: str) -> discord.Embed:
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Mode Select View
-# ═══════════════════════════════════════════════════════════════════
-
-class ModeSelectView(View):
-    def __init__(self, host: discord.Member, active_games: dict):
-        super().__init__(timeout=60)
-        self.host         = host
-        self.active_games = active_games
-        self.message: discord.Message | None = None
-
-    @ui_button(label="🏆  Tournament", style=discord.ButtonStyle.primary)
-    async def tournament(self, interaction: discord.Interaction, btn: Button):
-        if interaction.user.id != self.host.id:
-            await interaction.response.send_message("⛔ Only the host can set up the match.", ephemeral=True)
-            return
-        await interaction.response.defer()
-        self.stop()
-        embed = discord.Embed(
-            title="🏆   T O U R N A M E N T   S E T U P",
-            description="Select the **Shooter** from your server members:",
-            color=C_BLUE,
-        )
-        view = TournamentSetupView(host=self.host, active_games=self.active_games, message=self.message)
-        await self.message.edit(embed=embed, view=view)
-
-    @ui_button(label="🤝  Friendly", style=discord.ButtonStyle.secondary)
-    async def friendly(self, interaction: discord.Interaction, btn: Button):
-        if interaction.user.id != self.host.id:
-            await interaction.response.send_message("⛔ Only the person who ran /penalty can start.", ephemeral=True)
-            return
-        await interaction.response.defer()
-        self.stop()
-        embed = discord.Embed(
-            title="🤝  FRIENDLY MATCH CHALLENGE",
-            description=(
-                f"**{self.host.display_name}** wants a friendly penalty shootout!\n\n"
-                f"You'll take turns shooting and saving.\n"
-                f"**{self.host.display_name}** shoots first.\n\n"
-                f"Anyone can accept below!"
-            ),
-            color=C_BLUE,
-        )
-        embed.add_field(name="📋 Rules", value=(
-            "• Both secretly pick ⬅️ Left, ⬆️ Centre or ➡️ Right\n"
-            "• **Same direction** → 🧤 Save\n"
-            "• **Different** → ⚽ Goal\n"
-            "• **5 rounds**, fixed roles throughout\n"
-            "• Most goals wins!"
-        ), inline=False)
-        embed.set_footer(text="Challenge expires in 60 s")
-        view = FriendlyChallengeView(host=self.host, active_games=self.active_games)
-        await self.message.edit(embed=embed, view=view)
-        view.message = self.message
-
-    async def on_timeout(self):
-        if self.message:
-            try:
-                await self.message.edit(embed=embed_cancelled("Mode selection expired."), view=None)
-            except Exception:
-                pass
-
-
-# ═══════════════════════════════════════════════════════════════════
-#  Tournament Setup  (both selects + Start button shown together)
-# ═══════════════════════════════════════════════════════════════════
-
-class TournamentSetupView(View):
-    """
-    Shows shooter select, goalkeeper select, and shot-count buttons all at once.
-    Host fills both dropdowns then hits Start.
-    """
-    def __init__(self, host: discord.Member, active_games: dict, message: discord.Message):
-        super().__init__(timeout=120)
-        self.host         = host
-        self.active_games = active_games
-        self.message      = message
-        self.shooter:    discord.Member | None = None
-        self.goalkeeper: discord.Member | None = None
-        self.total_shots: int = 5
-
-        # Shooter select
-        self.shooter_select = discord.ui.UserSelect(
-            placeholder="🎯  Select Shooter…",
-            min_values=1, max_values=1, row=0
-        )
-        async def _shooter_cb(interaction: discord.Interaction):
-            await self._shooter_chosen(interaction)
-        self.shooter_select.callback = _shooter_cb
-        self.add_item(self.shooter_select)
-
-        # Goalkeeper select
-        self.keeper_select = discord.ui.UserSelect(
-            placeholder="🧤  Select Goalkeeper…",
-            min_values=1, max_values=1, row=1
-        )
-        async def _keeper_cb(interaction: discord.Interaction):
-            await self._keeper_chosen(interaction)
-        self.keeper_select.callback = _keeper_cb
-        self.add_item(self.keeper_select)
-
-        # Shot count buttons
-        for i, n in enumerate([3, 5, 7, 10]):
-            b = Button(
-                label=f"{n} shots",
-                style=discord.ButtonStyle.primary if n == 5 else discord.ButtonStyle.secondary,
-                custom_id=f"shots_{n}",
-                row=2,
-            )
-            b.callback = self._make_shots_cb(n)
-            self.add_item(b)
-
-        # Start button
-        self.start_btn = Button(label="▶️  Start Match", style=discord.ButtonStyle.success, row=3, disabled=True, custom_id="start_match")
-        async def _start_cb(interaction: discord.Interaction):
-            await self._start(interaction)
-        self.start_btn.callback = _start_cb
-        self.add_item(self.start_btn)
-
-    def _make_shots_cb(self, n: int):
-        async def cb(interaction: discord.Interaction):
-            if interaction.user.id != self.host.id:
-                await interaction.response.send_message("⛔ Only the host can set this up.", ephemeral=True)
-                return
-            self.total_shots = n
-            # Highlight selected shot button
-            for item in self.children:
-                if isinstance(item, Button) and item.custom_id and item.custom_id.startswith("shots_"):
-                    item.style = discord.ButtonStyle.primary if item.custom_id == f"shots_{n}" else discord.ButtonStyle.secondary
-            await interaction.response.defer()
-            await self._refresh()
-        return cb
-
-    async def _shooter_chosen(self, interaction: discord.Interaction):
-        if interaction.user.id != self.host.id:
-            await interaction.response.send_message("⛔ Only the host can set this up.", ephemeral=True)
-            return
-        uid = int(interaction.data["values"][0])
-        self.shooter = interaction.guild.get_member(uid) or await interaction.guild.fetch_member(uid)
-        if self.shooter and self.shooter.bot:
-            self.shooter = None
-            await interaction.response.send_message("⛔ Bots can't play.", ephemeral=True)
-            return
-        await interaction.response.defer()
-        await self._refresh()
-
-    async def _keeper_chosen(self, interaction: discord.Interaction):
-        if interaction.user.id != self.host.id:
-            await interaction.response.send_message("⛔ Only the host can set this up.", ephemeral=True)
-            return
-        uid = int(interaction.data["values"][0])
-        self.goalkeeper = interaction.guild.get_member(uid) or await interaction.guild.fetch_member(uid)
-        if self.goalkeeper and self.goalkeeper.bot:
-            self.goalkeeper = None
-            await interaction.response.send_message("⛔ Bots can't play.", ephemeral=True)
-            return
-        await interaction.response.defer()
-        await self._refresh()
-
-    async def _refresh(self):
-        """Update embed status and enable Start when both are selected."""
-        s_line = f"🎯  Shooter      →   {self.shooter.mention}" if self.shooter else "🎯  Shooter      →   *not selected*"
-        k_line = f"🧤  Goalkeeper →   {self.goalkeeper.mention}" if self.goalkeeper else "🧤  Goalkeeper →   *not selected*"
-
-        both_set = self.shooter is not None and self.goalkeeper is not None
-        same     = both_set and self.shooter.id == self.goalkeeper.id
-        either_bot = (self.shooter and self.shooter.bot) or (self.goalkeeper and self.goalkeeper.bot)
-
-        # Enable/disable start
-        for item in self.children:
-            if isinstance(item, Button) and item.custom_id == "start_match":
-                item.disabled = not both_set or same or either_bot
-
-        warning = ""
-        if same:           warning = "\n\n⛔  Shooter and goalkeeper must be different!"
-        elif either_bot:   warning = "\n\n⛔  Bots can't play!"
-
-        embed = discord.Embed(
-            title="🏆   T O U R N A M E N T   S E T U P",
-            description=(
-                f"{s_line}\n"
-                f"{k_line}\n\n"
-                f"🔢  Shots each   →   **{self.total_shots}**"
-                f"{warning}\n\n"
-                f"*Select both players above, then hit  ▶️ Start Match*"
-            ),
-            color=C_BLUE,
-        )
-        await self.message.edit(embed=embed, view=self)
-
-    async def _start(self, interaction: discord.Interaction):
-        if interaction.user.id != self.host.id:
-            await interaction.response.send_message("⛔ Only the host can start.", ephemeral=True)
-            return
-        if self.shooter is None or self.goalkeeper is None:
-            await interaction.response.send_message("⛔ Select both players first.", ephemeral=True)
-            return
-        if self.shooter.id == self.goalkeeper.id:
-            await interaction.response.send_message("⛔ Shooter and goalkeeper must be different.", ephemeral=True)
-            return
-
-        await interaction.response.defer()
-        self.stop()
-
-        game = Game.tournament(
-            host=self.host,
-            shooter=self.shooter,
-            goalkeeper=self.goalkeeper,
-            total_shots=self.total_shots,
-        )
-
-        embed = discord.Embed(
-            title="🏆   T O U R N A M E N T   C H A L L E N G E",
-            description=(
-                f"🎙️  **Host:** {self.host.mention} has set up a match!\n\n"
-                f"🎯  **Shooter:**      {self.shooter.mention}\n"
-                f"🧤  **Goalkeeper:**   {self.goalkeeper.mention}\n"
-                f"🔢  **Shots each:**   {self.total_shots}\n\n"
-                f"**{self.shooter.display_name}** or **{self.goalkeeper.display_name}** — accept or decline!"
-            ),
-            color=C_BLUE,
-        )
-        embed.add_field(name="📋 Rules", value=(
-            "• Both secretly pick ⬅️ Left, ⬆️ Centre or ➡️ Right\n"
-            "• **Same direction** → 🧤 Save\n"
-            "• **Different** → ⚽ Goal\n"
-            f"• **{self.total_shots} shots** each — most goals wins!"
-        ), inline=False)
-        embed.set_footer(text="Challenge expires in 60 s")
-
-        view = ChallengeView(game=game, active_games=self.active_games)
-        await self.message.edit(embed=embed, view=view)
-        view.message = self.message
-
-    async def on_timeout(self):
-        if self.message:
-            try:
-                await self.message.edit(embed=embed_cancelled("Tournament setup expired."), view=None)
-            except Exception:
-                pass
-
-
-# ═══════════════════════════════════════════════════════════════════
 #  Friendly Challenge View
 # ═══════════════════════════════════════════════════════════════════
 
 class FriendlyChallengeView(View):
-    def __init__(self, host: discord.Member, active_games: dict):
+    def __init__(self, host: discord.Member, active_games: dict,
+                 opponent: discord.Member = None, total_shots: int = 5):
         super().__init__(timeout=60)
         self.host         = host
+        self.opponent     = opponent   # None = open challenge
         self.active_games = active_games
+        self.total_shots  = total_shots
         self.message: discord.Message | None = None
 
     @ui_button(label="✅  Accept", style=discord.ButtonStyle.success)
@@ -473,12 +234,18 @@ class FriendlyChallengeView(View):
             return
         if interaction.user.bot:
             return
+        # If targeted challenge, only that person can accept
+        if self.opponent and interaction.user.id != self.opponent.id:
+            await interaction.response.send_message(
+                f"⛔ This challenge is for {self.opponent.mention} only.", ephemeral=True
+            )
+            return
         await interaction.response.defer()
         self.stop()
         game = Game.friendly(
             player_a=self.host,
             player_b=interaction.user,
-            total_shots=5,
+            total_shots=self.total_shots,
         )
         self.active_games[self.message.id] = game
         view = PenaltyView(game=game, active_games=self.active_games, message=self.message)
@@ -491,7 +258,12 @@ class FriendlyChallengeView(View):
             self.stop()
             await self.message.edit(embed=embed_cancelled("Challenge cancelled by host."), view=None)
             return
-        await interaction.response.send_message("⛔ Only the host can cancel, or someone else can accept!", ephemeral=True)
+        if self.opponent and interaction.user.id == self.opponent.id:
+            await interaction.response.defer()
+            self.stop()
+            await self.message.edit(embed=embed_cancelled(f"**{interaction.user.display_name}** declined the challenge."), view=None)
+            return
+        await interaction.response.send_message("⛔ This isn't your challenge to decline.", ephemeral=True)
 
     async def on_timeout(self):
         if self.message:
