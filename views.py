@@ -260,7 +260,7 @@ class ModeSelectView(View):
             "• Both secretly pick ⬅️ Left, ⬆️ Centre or ➡️ Right\n"
             "• **Same direction** → 🧤 Save\n"
             "• **Different** → ⚽ Goal\n"
-            "• **5 rounds**, roles swap each round\n"
+            "• **5 rounds**, fixed roles throughout\n"
             "• Most goals wins!"
         ), inline=False)
         embed.set_footer(text="Challenge expires in 60 s")
