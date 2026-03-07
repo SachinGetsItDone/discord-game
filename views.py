@@ -90,20 +90,17 @@ def _mode_tag(game: Game) -> str:
     return "🏆 Tournament" if game.mode == MODE_TOURNAMENT else "🤝 Friendly"
 
 def _role_line(game: Game) -> str:
-    if game.mode == MODE_TOURNAMENT:
-        return (
-            f"🎯  Shooter  →  {game.shooter.mention}\n"
-            f"🧤  Keeper   →  {game.goalkeeper.mention}"
-        )
+    half_str = f"1st Half  ({game.player_a.display_name} shooting)" if game.half == 1 else f"2nd Half  ({game.player_b.display_name} shooting)"
     return (
+        f"🔁  **{half_str}**  —  Shot {game.shot_in_half} / {game.total_shots}\n"
         f"🎯  Shooting  →  {game.shooter.mention}\n"
         f"🧤  In goal   →  {game.goalkeeper.mention}"
     )
 
 def _score_bar(game: Game) -> str:
     return (
-        f"🎯  **{game.shooter.display_name}**  {game.score_shooter}  —  {game.score_goalkeeper}  **{game.goalkeeper.display_name}**  🧤\n"
-        f"🔢  Round  **{game.round_num}**  /  **{game.total_shots}**"
+        f"**{game.player_a.display_name}**  {game.score_a}  ⚽  —  ⚽  {game.score_b}  **{game.player_b.display_name}**\n"
+        f"🔢  Round  **{game.round_num}**  /  **{game.total_rounds()}**"
     )
 
 def embed_match(game: Game, shooter_ready=False, keeper_ready=False) -> discord.Embed:
@@ -211,6 +208,22 @@ def embed_final(game: Game) -> discord.Embed:
 
 def embed_cancelled(reason: str) -> discord.Embed:
     return discord.Embed(title="❌   Match Cancelled", description=reason, color=C_GREY)
+
+
+def embed_halftime(game: Game) -> discord.Embed:
+    e = discord.Embed(
+        title="🔄   H A L F   T I M E",
+        description=(
+            f"```\n{_build_goal()}\n```\n"
+            f"**{game.player_a.display_name}** finished their {game.total_shots} shots!\n\n"
+            f"Now **{game.player_b.display_name}** steps up to shoot!\n"
+            f"🧤  **{game.player_a.display_name}** takes the gloves."
+        ),
+        color=C_PURPLE,
+    )
+    e.add_field(name="📊 Score so far", value=game.score_line(), inline=False)
+    e.set_footer(text="2nd half starting…")
+    return e
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -403,6 +416,13 @@ class PenaltyView(View):
         if game.is_over():
             self.active_games.pop(self.message.id, None)
             await self.message.edit(embed=embed_final(game), view=None)
+        elif game.round_num == game.total_shots + 1:
+            # Just crossed into second half — show halftime screen
+            await self.message.edit(embed=embed_halftime(game), view=None)
+            await asyncio.sleep(3.0)
+            new_view = PenaltyView(game=game, active_games=self.active_games, message=self.message)
+            self.active_games[self.message.id] = game
+            await self.message.edit(embed=embed_match(game), view=new_view)
         else:
             new_view = PenaltyView(game=game, active_games=self.active_games, message=self.message)
             self.active_games[self.message.id] = game
