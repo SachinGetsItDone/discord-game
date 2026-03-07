@@ -59,7 +59,7 @@ async def penalty_tournament(
         await interaction.response.send_message("⛔ Shooter and goalkeeper must be different people.", ephemeral=True)
         return
 
-    game = Game.tournament(host=host, shooter=shooter, goalkeeper=goalkeeper, total_shots=shots)
+    game = Game.tournament(host=host, player_a=shooter, player_b=goalkeeper, total_shots=shots)
 
     embed = discord.Embed(
         title="🏆   T O U R N A M E N T   C H A L L E N G E",
