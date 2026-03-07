@@ -299,7 +299,9 @@ class TournamentSetupView(View):
             placeholder="🎯  Select Shooter…",
             min_values=1, max_values=1, row=0
         )
-        self.shooter_select.callback = self._shooter_chosen
+        async def _shooter_cb(interaction: discord.Interaction):
+            await self._shooter_chosen(interaction)
+        self.shooter_select.callback = _shooter_cb
         self.add_item(self.shooter_select)
 
         # Goalkeeper select
@@ -307,7 +309,9 @@ class TournamentSetupView(View):
             placeholder="🧤  Select Goalkeeper…",
             min_values=1, max_values=1, row=1
         )
-        self.keeper_select.callback = self._keeper_chosen
+        async def _keeper_cb(interaction: discord.Interaction):
+            await self._keeper_chosen(interaction)
+        self.keeper_select.callback = _keeper_cb
         self.add_item(self.keeper_select)
 
         # Shot count buttons
@@ -323,7 +327,9 @@ class TournamentSetupView(View):
 
         # Start button
         self.start_btn = Button(label="▶️  Start Match", style=discord.ButtonStyle.success, row=3, disabled=True, custom_id="start_match")
-        self.start_btn.callback = self._start
+        async def _start_cb(interaction: discord.Interaction):
+            await self._start(interaction)
+        self.start_btn.callback = _start_cb
         self.add_item(self.start_btn)
 
     def _make_shots_cb(self, n: int):
