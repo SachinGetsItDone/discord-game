@@ -1,14 +1,9 @@
 """
 bot.py  –  Entry point for the Penalty Shootout Discord bot.
 
-Command:
-    /penalty
-
-Bot replies with mode selector buttons (Tournament / Friendly).
-
-Tournament mode: bot asks for @shooter, @goalkeeper, and shots count.
-Friendly mode:   the person who runs /penalty is player A; bot posts a
-                 challenge embed that anyone can accept as player B.
+Commands:
+    /penalty tournament @shooter @goalkeeper [shots]
+    /penalty friendly [@opponent] [shots]
 """
 
 import os
@@ -16,7 +11,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from views import ModeSelectView, C_BLUE
+from views import ChallengeView, FriendlyChallengeView, C_BLUE
+from game import Game
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -26,7 +22,6 @@ intents.members = True
 bot  = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
-# active_games: message_id → Game
 active_games: dict = {}
 
 
@@ -42,22 +37,101 @@ async def on_ready():
     )
 
 
-@tree.command(
-    name="penalty",
-    description="Start a penalty shootout — choose Tournament or Friendly mode.",
+# ── /penalty tournament ──────────────────────────────────────────
+@tree.command(name="penalty_tournament", description="🏆 Tournament — host picks shooter, goalkeeper & shot count.")
+@app_commands.describe(
+    shooter    = "The player who will take all the shots",
+    goalkeeper = "The player who will defend the goal",
+    shots      = "Number of shots each (1–10, default 5)",
 )
-async def penalty(interaction: discord.Interaction):
+async def penalty_tournament(
+    interaction: discord.Interaction,
+    shooter:    discord.Member,
+    goalkeeper: discord.Member,
+    shots:      app_commands.Range[int, 1, 10] = 5,
+):
+    host = interaction.user
+
+    if shooter.bot or goalkeeper.bot:
+        await interaction.response.send_message("⛔ Bots can't play.", ephemeral=True)
+        return
+    if shooter.id == goalkeeper.id:
+        await interaction.response.send_message("⛔ Shooter and goalkeeper must be different people.", ephemeral=True)
+        return
+
+    game = Game.tournament(host=host, shooter=shooter, goalkeeper=goalkeeper, total_shots=shots)
+
     embed = discord.Embed(
-        title="⚽  PENALTY SHOOTOUT",
+        title="🏆   T O U R N A M E N T   C H A L L E N G E",
         description=(
-            "Choose a game mode:\n\n"
-            "🏆 **Tournament** — Host assigns a Shooter & Goalkeeper. Fixed shots, best score wins.\n\n"
-            "🤝 **Friendly** — Challenge anyone! You both take turns shooting & saving."
+            f"🎙️  **Host:** {host.mention} has set up a match!\n\n"
+            f"🎯  **Shooter:**      {shooter.mention}\n"
+            f"🧤  **Goalkeeper:**   {goalkeeper.mention}\n"
+            f"🔢  **Shots each:**   {shots}\n\n"
+            f"**{shooter.display_name}** or **{goalkeeper.display_name}** — accept or decline!"
         ),
         color=C_BLUE,
     )
-    embed.set_footer(text="Select a mode below • Expires in 60 s")
-    view = ModeSelectView(host=interaction.user, active_games=active_games)
+    embed.add_field(name="📋 Rules", value=(
+        "• Both secretly pick ⬅️ Left, ⬆️ Centre or ➡️ Right\n"
+        "• **Same direction** → 🧤 Save\n"
+        "• **Different** → ⚽ Goal\n"
+        f"• **{shots} shots** — most goals wins!"
+    ), inline=False)
+    embed.set_footer(text="Challenge expires in 60 s")
+
+    view = ChallengeView(game=game, active_games=active_games)
+    await interaction.response.send_message(embed=embed, view=view)
+    message = await interaction.original_response()
+    view.message = message
+
+
+# ── /penalty friendly ────────────────────────────────────────────
+@tree.command(name="penalty_friendly", description="🤝 Friendly — challenge someone (or leave open for anyone).")
+@app_commands.describe(
+    opponent = "Who you want to challenge (leave empty for open challenge)",
+    shots    = "Number of shots (1–10, default 5)",
+)
+async def penalty_friendly(
+    interaction: discord.Interaction,
+    opponent: discord.Member = None,
+    shots:    app_commands.Range[int, 1, 10] = 5,
+):
+    host = interaction.user
+
+    if opponent:
+        if opponent.bot:
+            await interaction.response.send_message("⛔ Bots can't play.", ephemeral=True)
+            return
+        if opponent.id == host.id:
+            await interaction.response.send_message("⛔ You can't challenge yourself.", ephemeral=True)
+            return
+        target_str = f"{opponent.mention} has been challenged"
+        mention    = opponent.mention
+    else:
+        target_str = "Open challenge — anyone can accept!"
+        mention    = "anyone"
+
+    embed = discord.Embed(
+        title="🤝   F R I E N D L Y   C H A L L E N G E",
+        description=(
+            f"**{host.display_name}** wants a friendly penalty shootout!\n\n"
+            f"{target_str}\n\n"
+            f"🔢  **Shots:** {shots}\n"
+            f"🎲  Roles (Shooter / Goalkeeper) assigned **randomly** at kick-off!\n\n"
+            f"Hit ✅ Accept to play!"
+        ),
+        color=C_BLUE,
+    )
+    embed.add_field(name="📋 Rules", value=(
+        "• Both secretly pick ⬅️ Left, ⬆️ Centre or ➡️ Right\n"
+        "• **Same direction** → 🧤 Save\n"
+        "• **Different** → ⚽ Goal\n"
+        f"• **{shots} shots** — most goals wins!"
+    ), inline=False)
+    embed.set_footer(text="Challenge expires in 60 s")
+
+    view = FriendlyChallengeView(host=host, opponent=opponent, active_games=active_games, total_shots=shots)
     await interaction.response.send_message(embed=embed, view=view)
     message = await interaction.original_response()
     view.message = message
