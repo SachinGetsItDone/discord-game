@@ -102,7 +102,7 @@ def _role_line(game: Game) -> str:
 
 def _score_bar(game: Game) -> str:
     return (
-        f"**{game.player_a.display_name}**  {game.score_a}  —  {game.score_b}  **{game.player_b.display_name}**\n"
+        f"🎯  **{game.shooter.display_name}**  {game.score_shooter}  —  {game.score_goalkeeper}  **{game.goalkeeper.display_name}**  🧤\n"
         f"🔢  Round  **{game.round_num}**  /  **{game.total_shots}**"
     )
 
@@ -120,7 +120,7 @@ def embed_match(game: Game, shooter_ready=False, keeper_ready=False) -> discord.
         ),
         color=C_BLUE,
     )
-    e.set_footer(text="Pick ⬅️ Left  ·  ⬆️ Centre  ·  ➡️ Right   •   30 s   •   Your pick is secret")
+    e.set_footer(text="Pick ⬅️ Left  ·  ⬆️ Centre  ·  ➡️ Right   •   45 s   •   Your pick is secret")
     return e
 
 def embed_suspense(game: Game) -> discord.Embed:
@@ -191,7 +191,7 @@ def embed_final(game: Game) -> discord.Embed:
         desc  = (
             f"```\n{_build_goal()}\n```\n"
             f"🎉   **{winner.display_name}**  wins the shootout!   🎉\n\n"
-            f"**{game.player_a.display_name}**   {game.score_a}  —  {game.score_b}   **{game.player_b.display_name}**"
+            f"🎯  **{game.shooter.display_name}**   {game.score_shooter}  —  {game.score_goalkeeper}   **{game.goalkeeper.display_name}**  🧤"
         )
         color = C_GOLD
     else:
@@ -199,7 +199,7 @@ def embed_final(game: Game) -> discord.Embed:
         desc  = (
             f"```\n{_build_goal()}\n```\n"
             f"Both players finish level — what a match!\n\n"
-            f"**{game.player_a.display_name}**   {game.score_a}  —  {game.score_b}   **{game.player_b.display_name}**"
+            f"🎯  **{game.shooter.display_name}**   {game.score_shooter}  —  {game.score_goalkeeper}   **{game.goalkeeper.display_name}**  🧤"
         )
         color = C_GREY
 
@@ -277,140 +277,161 @@ class ModeSelectView(View):
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Tournament Setup  (in-chat user select menus)
+#  Tournament Setup  (both selects + Start button shown together)
 # ═══════════════════════════════════════════════════════════════════
 
 class TournamentSetupView(View):
     """
-    Step 1: Host picks the Shooter via a UserSelect menu.
-    Step 2: Host picks the Goalkeeper via a UserSelect menu.
-    Step 3: Host picks shot count via buttons.
-    All happens in-chat, no modal popup.
+    Shows shooter select, goalkeeper select, and shot-count buttons all at once.
+    Host fills both dropdowns then hits Start.
     """
     def __init__(self, host: discord.Member, active_games: dict, message: discord.Message):
         super().__init__(timeout=120)
         self.host         = host
         self.active_games = active_games
         self.message      = message
-        self.shooter: discord.Member | None    = None
+        self.shooter:    discord.Member | None = None
         self.goalkeeper: discord.Member | None = None
+        self.total_shots: int = 5
 
-        # Step 1: pick shooter
-        self._add_shooter_select()
+        # Shooter select
+        self.shooter_select = discord.ui.UserSelect(
+            placeholder="🎯  Select Shooter…",
+            min_values=1, max_values=1, row=0
+        )
+        self.shooter_select.callback = self._shooter_chosen
+        self.add_item(self.shooter_select)
 
-    def _add_shooter_select(self):
-        self.clear_items()
-        select = discord.ui.UserSelect(placeholder="🎯  Select the Shooter…", min_values=1, max_values=1)
-        select.callback = self._shooter_chosen
-        self.add_item(select)
+        # Goalkeeper select
+        self.keeper_select = discord.ui.UserSelect(
+            placeholder="🧤  Select Goalkeeper…",
+            min_values=1, max_values=1, row=1
+        )
+        self.keeper_select.callback = self._keeper_chosen
+        self.add_item(self.keeper_select)
 
-    def _add_goalkeeper_select(self):
-        self.clear_items()
-        select = discord.ui.UserSelect(placeholder="🧤  Select the Goalkeeper…", min_values=1, max_values=1)
-        select.callback = self._goalkeeper_chosen
-        self.add_item(select)
-
-    def _add_shot_buttons(self):
-        self.clear_items()
-        for n in [3, 5, 7, 10]:
-            b = Button(label=f"{n} shots", style=discord.ButtonStyle.primary)
+        # Shot count buttons
+        for i, n in enumerate([3, 5, 7, 10]):
+            b = Button(
+                label=f"{n} shots",
+                style=discord.ButtonStyle.primary if n == 5 else discord.ButtonStyle.secondary,
+                custom_id=f"shots_{n}",
+                row=2,
+            )
             b.callback = self._make_shots_cb(n)
             self.add_item(b)
+
+        # Start button
+        self.start_btn = Button(label="▶️  Start Match", style=discord.ButtonStyle.success, row=3, disabled=True)
+        self.start_btn.callback = self._start
+        self.add_item(self.start_btn)
 
     def _make_shots_cb(self, n: int):
         async def cb(interaction: discord.Interaction):
             if interaction.user.id != self.host.id:
                 await interaction.response.send_message("⛔ Only the host can set this up.", ephemeral=True)
                 return
+            self.total_shots = n
+            # Highlight selected shot button
+            for item in self.children:
+                if isinstance(item, Button) and item.custom_id and item.custom_id.startswith("shots_"):
+                    item.style = discord.ButtonStyle.primary if item.custom_id == f"shots_{n}" else discord.ButtonStyle.secondary
             await interaction.response.defer()
-            self.stop()
-
-            game = Game(
-                mode=MODE_TOURNAMENT,
-                host=self.host,
-                player_a=self.shooter,
-                player_b=self.goalkeeper,
-                total_shots=n,
-            )
-
-            embed = discord.Embed(
-                title="🏆   T O U R N A M E N T   C H A L L E N G E",
-                description=(
-                    f"🎙️  **Host:** {self.host.mention} has set up a match!\n\n"
-                    f"🎯  **Shooter:**      {self.shooter.mention}\n"
-                    f"🧤  **Goalkeeper:**   {self.goalkeeper.mention}\n"
-                    f"🔢  **Shots each:**   {n}\n\n"
-                    f"**{self.shooter.display_name}** or **{self.goalkeeper.display_name}** — accept or decline!"
-                ),
-                color=C_BLUE,
-            )
-            embed.add_field(name="📋 Rules", value=(
-                "• Both secretly pick ⬅️ Left, ⬆️ Centre or ➡️ Right\n"
-                "• **Same direction** → 🧤 Save\n"
-                "• **Different** → ⚽ Goal\n"
-                f"• **{n} shots** each — most goals wins!"
-            ), inline=False)
-            embed.set_footer(text="Challenge expires in 60 s")
-
-            view = ChallengeView(game=game, active_games=self.active_games)
-            await self.message.edit(embed=embed, view=view)
-            view.message = self.message
-
+            await self._refresh()
         return cb
 
     async def _shooter_chosen(self, interaction: discord.Interaction):
         if interaction.user.id != self.host.id:
             await interaction.response.send_message("⛔ Only the host can set this up.", ephemeral=True)
             return
-        member = interaction.data["resolved"]["users"]
-        uid = list(member.keys())[0]
+        uid = list(interaction.data["resolved"]["users"].keys())[0]
         self.shooter = interaction.guild.get_member(int(uid))
-
-        if self.shooter and self.shooter.bot:
-            await interaction.response.send_message("⛔ Bots can't play.", ephemeral=True)
-            return
-
         await interaction.response.defer()
-        self._add_goalkeeper_select()
+        await self._refresh()
 
-        embed = discord.Embed(
-            title="🏆   T O U R N A M E N T   S E T U P",
-            description=(
-                f"✅  **Shooter:** {self.shooter.mention}\n\n"
-                f"Now select the **Goalkeeper**:"
-            ),
-            color=C_BLUE,
-        )
-        await self.message.edit(embed=embed, view=self)
-
-    async def _goalkeeper_chosen(self, interaction: discord.Interaction):
+    async def _keeper_chosen(self, interaction: discord.Interaction):
         if interaction.user.id != self.host.id:
             await interaction.response.send_message("⛔ Only the host can set this up.", ephemeral=True)
             return
-        member = interaction.data["resolved"]["users"]
-        uid = list(member.keys())[0]
+        uid = list(interaction.data["resolved"]["users"].keys())[0]
         self.goalkeeper = interaction.guild.get_member(int(uid))
-
-        if self.goalkeeper and self.goalkeeper.bot:
-            await interaction.response.send_message("⛔ Bots can't play.", ephemeral=True)
-            return
-        if self.goalkeeper.id == self.shooter.id:
-            await interaction.response.send_message("⛔ Shooter and goalkeeper must be different people.", ephemeral=True)
-            return
-
         await interaction.response.defer()
-        self._add_shot_buttons()
+        await self._refresh()
+
+    async def _refresh(self):
+        """Update embed status and enable Start when both are selected."""
+        s_line = f"🎯  Shooter      →   {self.shooter.mention}" if self.shooter else "🎯  Shooter      →   *not selected*"
+        k_line = f"🧤  Goalkeeper →   {self.goalkeeper.mention}" if self.goalkeeper else "🧤  Goalkeeper →   *not selected*"
+
+        both_set = self.shooter is not None and self.goalkeeper is not None
+        same     = both_set and self.shooter.id == self.goalkeeper.id
+        either_bot = (self.shooter and self.shooter.bot) or (self.goalkeeper and self.goalkeeper.bot)
+
+        # Enable/disable start
+        for item in self.children:
+            if isinstance(item, Button) and item.custom_id is None and item.label and "Start" in item.label:
+                item.disabled = not both_set or same or either_bot
+
+        warning = ""
+        if same:           warning = "\n\n⛔  Shooter and goalkeeper must be different!"
+        elif either_bot:   warning = "\n\n⛔  Bots can't play!"
 
         embed = discord.Embed(
             title="🏆   T O U R N A M E N T   S E T U P",
             description=(
-                f"✅  **Shooter:**    {self.shooter.mention}\n"
-                f"✅  **Goalkeeper:** {self.goalkeeper.mention}\n\n"
-                f"How many shots each?"
+                f"{s_line}\n"
+                f"{k_line}\n\n"
+                f"🔢  Shots each   →   **{self.total_shots}**"
+                f"{warning}\n\n"
+                f"*Select both players above, then hit  ▶️ Start Match*"
             ),
             color=C_BLUE,
         )
         await self.message.edit(embed=embed, view=self)
+
+    async def _start(self, interaction: discord.Interaction):
+        if interaction.user.id != self.host.id:
+            await interaction.response.send_message("⛔ Only the host can start.", ephemeral=True)
+            return
+        if self.shooter is None or self.goalkeeper is None:
+            await interaction.response.send_message("⛔ Select both players first.", ephemeral=True)
+            return
+        if self.shooter.id == self.goalkeeper.id:
+            await interaction.response.send_message("⛔ Shooter and goalkeeper must be different.", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        self.stop()
+
+        game = Game.tournament(
+            host=self.host,
+            shooter=self.shooter,
+            goalkeeper=self.goalkeeper,
+            total_shots=self.total_shots,
+        )
+
+        embed = discord.Embed(
+            title="🏆   T O U R N A M E N T   C H A L L E N G E",
+            description=(
+                f"🎙️  **Host:** {self.host.mention} has set up a match!\n\n"
+                f"🎯  **Shooter:**      {self.shooter.mention}\n"
+                f"🧤  **Goalkeeper:**   {self.goalkeeper.mention}\n"
+                f"🔢  **Shots each:**   {self.total_shots}\n\n"
+                f"**{self.shooter.display_name}** or **{self.goalkeeper.display_name}** — accept or decline!"
+            ),
+            color=C_BLUE,
+        )
+        embed.add_field(name="📋 Rules", value=(
+            "• Both secretly pick ⬅️ Left, ⬆️ Centre or ➡️ Right\n"
+            "• **Same direction** → 🧤 Save\n"
+            "• **Different** → ⚽ Goal\n"
+            f"• **{self.total_shots} shots** each — most goals wins!"
+        ), inline=False)
+        embed.set_footer(text="Challenge expires in 60 s")
+
+        view = ChallengeView(game=game, active_games=self.active_games)
+        await self.message.edit(embed=embed, view=view)
+        view.message = self.message
 
     async def on_timeout(self):
         if self.message:
@@ -440,9 +461,7 @@ class FriendlyChallengeView(View):
             return
         await interaction.response.defer()
         self.stop()
-        game = Game(
-            mode=MODE_FRIENDLY,
-            host=self.host,
+        game = Game.friendly(
             player_a=self.host,
             player_b=interaction.user,
             total_shots=5,
@@ -481,7 +500,7 @@ class ChallengeView(View):
 
     @ui_button(label="✅  Accept", style=discord.ButtonStyle.success)
     async def accept(self, interaction: discord.Interaction, btn: Button):
-        valid_ids = {self.game.player_a.id, self.game.player_b.id}
+        valid_ids = {self.game.shooter.id, self.game.goalkeeper.id}
         if interaction.user.id not in valid_ids:
             await interaction.response.send_message("⛔ You're not part of this challenge.", ephemeral=True)
             return
@@ -493,7 +512,7 @@ class ChallengeView(View):
 
     @ui_button(label="❌  Decline", style=discord.ButtonStyle.danger)
     async def decline(self, interaction: discord.Interaction, btn: Button):
-        valid_ids = {self.game.player_a.id, self.game.player_b.id}
+        valid_ids = {self.game.shooter.id, self.game.goalkeeper.id}
         if interaction.user.id not in valid_ids:
             await interaction.response.send_message("⛔ You're not part of this challenge.", ephemeral=True)
             return
@@ -518,7 +537,7 @@ class ChallengeView(View):
 
 class PenaltyView(View):
     def __init__(self, game: Game, active_games: dict, message: discord.Message):
-        super().__init__(timeout=30)
+        super().__init__(timeout=45)
         self.game         = game
         self.active_games = active_games
         self.message      = message
