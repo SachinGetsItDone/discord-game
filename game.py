@@ -12,69 +12,90 @@ DIRECTIONS = {
     "right":  "➡️  RIGHT",
 }
 
-# Column indices for each direction in the 13-wide grid
-_COL   = {"left": 1, "centre": 5, "right": 9}
 _POST  = "🟫"
 _BAR   = "🟨"
 _INNER = "⬛"
-_DIVID = "🔲"
 _GRASS = "🟩"
 _BALL  = "⚽"
 _GLOVE = "🧤"
+_SPOT  = "🔵"
+_SCORE = "🟥"   # goal highlight
+_BLOCK = "🟦"   # save highlight
+
+W    = 9
+_COL = {"left": 1, "centre": 4, "right": 7}
 
 
-def build_grid(shot_dir: str, keeper_dir: str) -> str:
-    """
-    6-row × 13-col emoji grid:
-      Row 0  = crossbar
-      Rows 1-3 = net interior (keeper/ball placed in row 2)
-      Rows 4-5 = grass
-    """
-    rows = []
+def _base():
+    return [
+        [_POST] + [_BAR]   * 7 + [_POST],
+        [_POST] + [_INNER] * 7 + [_POST],
+        [_POST] + [_INNER] * 7 + [_POST],
+        [_POST] + [_INNER] * 7 + [_POST],
+        [_GRASS] * W,
+        [_GRASS] * W,
+    ]
 
-    # Crossbar
-    row0 = [_BAR] * 13
-    for i in (0, 4, 8, 12):
-        row0[i] = _POST if i in (0, 12) else _DIVID
-    rows.append(row0)
 
-    # Net interior
-    for _ in range(3):
-        row = [_INNER] * 13
-        row[0] = _POST; row[4] = _DIVID; row[8] = _DIVID; row[12] = _POST
-        rows.append(row)
+def _render(rows) -> str:
+    return "```\n" + "".join("".join(r) + "\n" for r in rows) + "```"
 
-    # Grass
-    for _ in range(2):
-        rows.append([_GRASS] * 13)
 
-    # Place keeper (row 2)
-    rows[2][_COL[keeper_dir]] = _GLOVE
-    # Place ball (row 2) — overlaps keeper square if save
-    rows[2][_COL[shot_dir]]   = _BALL
+def grid_idle() -> str:
+    """Ball on the spot, keeper centred — pre-kick."""
+    r = _base()
+    r[1][_COL["centre"]] = _GLOVE
+    r[5][_COL["centre"]] = _BALL
+    return _render(r)
 
-    return "```\n" + "\n".join("".join(r) for r in rows) + "\n```"
+
+def grid_runup(keeper_dir: str) -> str:
+    """Keeper has committed, ball still on spot."""
+    r = _base()
+    r[1][_COL[keeper_dir]] = _GLOVE
+    r[5][_COL["centre"]]   = _BALL
+    return _render(r)
+
+
+def grid_flying(shot_dir: str, keeper_dir: str) -> str:
+    """Ball entering the net area."""
+    r = _base()
+    r[1][_COL[keeper_dir]]  = _GLOVE
+    r[3][_COL[shot_dir]]    = _BALL
+    return _render(r)
+
+
+def grid_result(shot_dir: str, keeper_dir: str, is_goal: bool) -> str:
+    """Final frame — ball settled, column highlighted."""
+    r = _base()
+    kc = _COL[keeper_dir]
+    bc = _COL[shot_dir]
+    r[1][kc] = _GLOVE
+    r[2][bc] = _BALL
+    highlight = _SCORE if is_goal else _BLOCK
+    for ri in (1, 3):
+        if r[ri][bc] == _INNER:
+            r[ri][bc] = highlight
+    return _render(r)
 
 
 @dataclass
 class Game:
     mode:        str
     host:        discord.Member
-    player_a:    discord.Member   # shoots 1st half
-    player_b:    discord.Member   # shoots 2nd half
-    keeper_a:    discord.Member   # keeps while A shoots (= player_b)
-    keeper_b:    discord.Member   # keeps while B shoots (= player_a)
+    player_a:    discord.Member
+    player_b:    discord.Member
+    keeper_a:    discord.Member
+    keeper_b:    discord.Member
     total_shots: int = 5
 
-    score_a: int = 0   # goals by player_a
-    score_b: int = 0   # goals by player_b
+    score_a:   int = 0
+    score_b:   int = 0
     round_num: int = 1
 
     voted: set = field(default_factory=set)
     _choice_shooter:    Optional[str] = field(default=None, repr=False)
     _choice_goalkeeper: Optional[str] = field(default=None, repr=False)
-
-    # ── Factories ────────────────────────────────────────────────
 
     @classmethod
     def tournament(cls, host, player_a, player_b, total_shots=5):
@@ -95,8 +116,6 @@ class Game:
             keeper_a=player_b, keeper_b=player_a,
             total_shots=total_shots,
         )
-
-    # ── Properties ───────────────────────────────────────────────
 
     @property
     def half(self) -> int:
@@ -120,8 +139,6 @@ class Game:
     def is_over(self) -> bool:
         return self.round_num > self.total_rounds()
 
-    # ── Gameplay ─────────────────────────────────────────────────
-
     def record_choice(self, player: discord.Member, direction: str) -> bool:
         if player.id == self.shooter.id:
             self._choice_shooter = direction
@@ -141,8 +158,6 @@ class Game:
             else:
                 self.score_b += 1
 
-        grid = build_grid(shot_dir, keeper_dir)
-
         self._choice_shooter    = None
         self._choice_goalkeeper = None
         self.voted              = set()
@@ -152,11 +167,10 @@ class Game:
             "is_goal":    is_goal,
             "shot_dir":   shot_dir,
             "keeper_dir": keeper_dir,
-            "grid":       grid,
         }
 
     def score_line(self) -> str:
         return (
-            f"**{self.player_a.display_name}**  {self.score_a}  ⚽  —  ⚽  {self.score_b}  "
+            f"**{self.player_a.display_name}**  {self.score_a}  —  {self.score_b}  "
             f"**{self.player_b.display_name}**"
         )
