@@ -14,12 +14,16 @@ C_GOLD   = 0xF59E0B
 C_GREY   = 0x6B7280
 C_ORANGE = 0xF97316
 C_PURPLE = 0x8B5CF6
-C_DARK   = 0x1E1E2E
 
 
 # ═══════════════════════════════════════════════════════════════════
 #  Helpers
 # ═══════════════════════════════════════════════════════════════════
+
+# Zero-width spaces used as padding lines so every embed description
+# has the same number of lines → Discord window never resizes.
+_PAD = "\n\u200b\n\u200b\n\u200b"
+
 
 def _scorebar(game: Game) -> str:
     half_label = "1st Half" if game.half == 1 else "2nd Half"
@@ -38,13 +42,16 @@ def _roleline(game: Game) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════
-#  Embed builders
+#  Embed builders  (all descriptions have same line count via _PAD)
 # ═══════════════════════════════════════════════════════════════════
 
 def embed_match(game: Game, waiting_for: str = "") -> discord.Embed:
-    desc = f"{grid_idle()}\n{_roleline(game)}\n\n*Both pick secretly — same = 🧤 Save, different = ⚽ Goal*"
-    if waiting_for:
-        desc += f"\n\n⏳  Waiting for **{waiting_for}**…"
+    status = f"⏳  Waiting for **{waiting_for}**…" if waiting_for else "*Both pick secretly — same = 🧤 Save, different = ⚽ Goal*"
+    desc = (
+        f"{grid_idle()}"
+        f"{_roleline(game)}\n\n"
+        f"{status}{_PAD}"
+    )
     e = discord.Embed(title="⚽   P E N A L T Y   S H O O T O U T", description=desc, color=C_BLUE)
     e.add_field(name="📊 Score", value=_scorebar(game), inline=False)
     e.set_footer(text="You have 45 seconds  •  Your pick is secret")
@@ -52,86 +59,80 @@ def embed_match(game: Game, waiting_for: str = "") -> discord.Embed:
 
 
 def embed_suspense(game: Game) -> discord.Embed:
-    return discord.Embed(
-        title="😤   S T E P P I N G   U P . . .",
-        description=(
-            f"{grid_idle()}"
-            f"**{game.shooter.display_name}** places the ball on the spot…\n"
-            f"**{game.goalkeeper.mention}** holds the line.\n\n"
-            f"*The crowd goes silent* 🤫"
-        ),
-        color=C_ORANGE,
+    desc = (
+        f"{grid_idle()}"
+        f"{_roleline(game)}\n\n"
+        f"**{game.shooter.display_name}** places the ball on the spot…\n"
+        f"*The crowd goes silent* 🤫{_PAD}"
     )
+    e = discord.Embed(title="😤   S T E P P I N G   U P . . .", description=desc, color=C_ORANGE)
+    e.add_field(name="📊 Score", value=_scorebar(game), inline=False)
+    e.set_footer(text="Both players have chosen…")
+    return e
 
 
 def embed_runup(game: Game, keeper_dir: str) -> discord.Embed:
-    return discord.Embed(
-        title="🏃   R U N N I N G   U P !",
-        description=(
-            f"{grid_runup(keeper_dir)}"
-            f"**{game.shooter.display_name}** charges forward!\n"
-            f"🧤  The keeper commits — dives **{DIRECTIONS[keeper_dir]}**!\n\n"
-            f"*Which way did the shooter go?* 👀"
-        ),
-        color=C_ORANGE,
+    desc = (
+        f"{grid_runup(keeper_dir)}"
+        f"{_roleline(game)}\n\n"
+        f"**{game.shooter.display_name}** is charging forward!\n"
+        f"🧤  Keeper dives **{DIRECTIONS[keeper_dir]}**!{_PAD}"
     )
+    e = discord.Embed(title="🏃   R U N N I N G   U P !", description=desc, color=C_ORANGE)
+    e.add_field(name="📊 Score", value=_scorebar(game), inline=False)
+    e.set_footer(text="Which way did the shooter go? 👀")
+    return e
 
 
 def embed_flying(game: Game, shot_dir: str, keeper_dir: str) -> discord.Embed:
-    return discord.Embed(
-        title="💨   B A L L   I N   T H E   A I R !",
-        description=(
-            f"{grid_flying(shot_dir, keeper_dir)}"
-            f"**{game.shooter.display_name}** shoots **{DIRECTIONS[shot_dir]}**!\n\n"
-            f"*It's going in… or is it?* 😱"
-        ),
-        color=C_ORANGE,
+    desc = (
+        f"{grid_flying(shot_dir, keeper_dir)}"
+        f"{_roleline(game)}\n\n"
+        f"**{game.shooter.display_name}** shoots **{DIRECTIONS[shot_dir]}**!\n"
+        f"*It's going in… or is it?* 😱{_PAD}"
     )
+    e = discord.Embed(title="💨   B A L L   I N   T H E   A I R !", description=desc, color=C_ORANGE)
+    e.add_field(name="📊 Score", value=_scorebar(game), inline=False)
+    e.set_footer(text="…")
+    return e
 
 
 def embed_goal(game: Game, shot_dir: str, keeper_dir: str, shooter: discord.Member, keeper: discord.Member) -> discord.Embed:
-    e = discord.Embed(
-        title="⚽   G  O  A  L  !   🔥",
-        description=(
-            f"{grid_result(shot_dir, keeper_dir, True)}"
-            f"🎯  **{shooter.display_name}** kicked  {DIRECTIONS[shot_dir]}\n"
-            f"🧤  **{keeper.display_name}** dived    {DIRECTIONS[keeper_dir]}\n\n"
-            f"✅  **{shooter.display_name}** scores! The net bulges!"
-        ),
-        color=C_GREEN,
+    desc = (
+        f"{grid_result(shot_dir, keeper_dir, True)}"
+        f"🎯  **{shooter.display_name}** kicked  {DIRECTIONS[shot_dir]}\n"
+        f"🧤  **{keeper.display_name}** dived    {DIRECTIONS[keeper_dir]}\n\n"
+        f"✅  **{shooter.display_name}** scores! The net bulges!{_PAD}"
     )
+    e = discord.Embed(title="⚽   G  O  A  L  !   🔥", description=desc, color=C_GREEN)
     e.add_field(name="📊 Score", value=_scorebar(game), inline=False)
+    e.set_footer(text="\u200b")
     return e
 
 
 def embed_saved(game: Game, shot_dir: str, keeper_dir: str, shooter: discord.Member, keeper: discord.Member) -> discord.Embed:
-    e = discord.Embed(
-        title="🧤   S  A  V  E  D  !   💪",
-        description=(
-            f"{grid_result(shot_dir, keeper_dir, False)}"
-            f"🎯  **{shooter.display_name}** kicked  {DIRECTIONS[shot_dir]}\n"
-            f"🧤  **{keeper.display_name}** dived    {DIRECTIONS[keeper_dir]}\n\n"
-            f"🛑  **{keeper.display_name}** read it perfectly!"
-        ),
-        color=C_RED,
+    desc = (
+        f"{grid_result(shot_dir, keeper_dir, False)}"
+        f"🎯  **{shooter.display_name}** kicked  {DIRECTIONS[shot_dir]}\n"
+        f"🧤  **{keeper.display_name}** dived    {DIRECTIONS[keeper_dir]}\n\n"
+        f"🛑  **{keeper.display_name}** read it perfectly!{_PAD}"
     )
+    e = discord.Embed(title="🧤   S  A  V  E  D  !   💪", description=desc, color=C_RED)
     e.add_field(name="📊 Score", value=_scorebar(game), inline=False)
+    e.set_footer(text="\u200b")
     return e
 
 
 def embed_halftime(game: Game) -> discord.Embed:
-    e = discord.Embed(
-        title="🔄   H A L F   T I M E",
-        description=(
-            f"**{game.player_a.display_name}** has taken all {game.total_shots} shots!\n\n"
-            f"🔁  Now **{game.player_b.display_name}** steps up to shoot\n"
-            f"🧤  **{game.player_a.display_name}** takes the gloves\n\n"
-            f"───────────────────\n"
-            f"📊  **{game.score_line()}**\n"
-            f"───────────────────"
-        ),
-        color=C_PURPLE,
+    desc = (
+        f"**{game.player_a.display_name}** has taken all {game.total_shots} shots!\n\n"
+        f"🔁  Now **{game.player_b.display_name}** steps up to shoot\n"
+        f"🧤  **{game.player_a.display_name}** takes the gloves\n\n"
+        f"───────────────────\n"
+        f"📊  **{game.score_line()}**\n"
+        f"───────────────────{_PAD}"
     )
+    e = discord.Embed(title="🔄   H A L F   T I M E", description=desc, color=C_PURPLE)
     e.set_footer(text="2nd half kicks off shortly…")
     return e
 
@@ -151,7 +152,7 @@ def embed_final(game: Game) -> discord.Embed:
         winner = None
         title  = "🤝   I  T ' S   A   D  R  A  W  !"
         color  = C_BLUE
-        banner = "🏳️🏳️  What a battle — honours even!  🏳️🏳️"
+        banner = "🏳️🏳️  Honours even — what a match!  🏳️🏳️"
 
     e = discord.Embed(title=title, description=banner, color=color)
     e.add_field(
@@ -303,12 +304,8 @@ class PenaltyView(View):
         if self._resolved:
             await interaction.response.send_message("⚡ Round already resolved!", ephemeral=True); return
 
-        role = "🎯" if interaction.user.id == game.shooter.id else "🧤"
-        dir_label = {"left": "⬅️ LEFT", "centre": "⬆️ CENTRE", "right": "➡️ RIGHT"}[direction]
-        await interaction.response.send_message(
-            f"{role}  Locked in: **{dir_label}** ✅\n*Waiting for your opponent…*",
-            ephemeral=True,
-        )
+        # Acknowledge silently — no popup message shown to user
+        await interaction.response.defer(ephemeral=True)
 
         async with self._lock:
             if self._resolved:
@@ -333,7 +330,7 @@ class PenaltyView(View):
     async def _animate_and_resolve(self):
         game = self.game
 
-        # Capture who shot/kept BEFORE resolve increments round_num
+        # Capture shooter/keeper BEFORE resolve increments round_num
         shooter    = game.shooter
         goalkeeper = game.goalkeeper
 
@@ -341,13 +338,13 @@ class PenaltyView(View):
         await self.message.edit(embed=embed_suspense(game), view=None)
         await asyncio.sleep(0.7)
 
-        # Resolve to get directions
+        # Resolve
         result     = game.resolve_round()
         shot_dir   = result["shot_dir"]
         keeper_dir = result["keeper_dir"]
         is_goal    = result["is_goal"]
 
-        # Step 2 — keeper commits (run-up)
+        # Step 2 — keeper commits
         await self.message.edit(embed=embed_runup(game, keeper_dir), view=None)
         await asyncio.sleep(0.6)
 
@@ -390,9 +387,7 @@ class PenaltyView(View):
         who = " & ".join(missing) if missing else "someone"
         try:
             await self.message.edit(
-                embed=embed_cancelled(
-                    f"⏰  **{who}** didn't choose in time.\n\n{game.score_line()}"
-                ),
+                embed=embed_cancelled(f"⏰  **{who}** didn't choose in time.\n\n{game.score_line()}"),
                 view=None,
             )
         except Exception:
